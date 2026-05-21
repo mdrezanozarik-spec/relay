@@ -1,6 +1,13 @@
 import { PassThrough, Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { setDefaultResultOrder } from "node:dns";
+import http from "node:http";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 export const config = {
   api: { bodyParser: false },
@@ -13,7 +20,6 @@ const UPSTREAM_DNS_ORDER = (process.env.UPSTREAM_DNS_ORDER || "ipv4first").trim(
 const PLATFORM_HEADER_PREFIX = `x-${String.fromCharCode(118, 101, 114, 99, 101, 108)}-`;
 const RELAY_PATH = normalizeRelayPath(process.env.RELAY_PATH || "");
 const PUBLIC_RELAY_PATH = normalizeRelayPath(process.env.PUBLIC_RELAY_PATH || "/api");
-const RELAY_KEY = (process.env.RELAY_KEY || "").trim();
 const UPSTREAM_TIMEOUT_MS = parsePositiveInt(process.env.UPSTREAM_TIMEOUT_MS, 25000, 1000);
 const MAX_INFLIGHT = parsePositiveInt(process.env.MAX_INFLIGHT, 128, 1);
 const MAX_UP_BPS = parseNonNegativeInt(process.env.MAX_UP_BPS, 2621440);
@@ -67,7 +73,7 @@ const logState = {
   error: { lastAt: 0, suppressed: 0 },
 };
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const startedAt = Date.now();
   let slotAcquired = false;
@@ -92,10 +98,6 @@ export default async function handler(req, res) {
     res.statusCode = 500;
     return res.end("Misconfigured: PUBLIC_RELAY_PATH cannot be '/'");
   }
-  if (RELAY_KEY && RELAY_KEY.length < 16) {
-    res.statusCode = 500;
-    return res.end("Misconfigured: RELAY_KEY is too short");
-  }
 
   try {
     const host = req.headers.host || "localhost";
@@ -115,13 +117,6 @@ export default async function handler(req, res) {
       return res.end("Method Not Allowed");
     }
 
-    if (RELAY_KEY) {
-      const token = (req.headers["x-relay-key"] || "").toString();
-      if (token !== RELAY_KEY) {
-        res.statusCode = 403;
-        return res.end("Forbidden");
-      }
-    }
     if (!tryAcquireSlot()) {
       res.statusCode = 503;
       res.setHeader("retry-after", "1");
@@ -150,7 +145,6 @@ export default async function handler(req, res) {
     let hitUpstreamTimeout = false;
     const timeoutRef = setTimeout(() => {
       hitUpstreamTimeout = true;
-      // Avoid throwing from timeout callback on runtimes that mishandle abort reasons.
       try {
         abortCtrl.abort();
       } catch {}
@@ -461,21 +455,13 @@ function createThrottleTransform(limiter) {
     },
   });
 }
-import http from "node:http";
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
+// ساختار سرور برای پشتیبانی از صفحه استتار HTML
 const port = process.env.PORT || 3000;
-
 const server = http.createServer((req, res) => {
   const host = req.headers.host || "localhost";
   const url = new URL(req.url || "/", `https://${host}`);
   
-  // اگر آدرس اصلی سایت بود، فایل HTML رو نشون بده
   if (url.pathname === "/" || url.pathname === "/index.html") {
     const htmlPath = path.join(__dirname, "public", "index.html");
     
@@ -490,7 +476,6 @@ const server = http.createServer((req, res) => {
       res.end(data);
     });
   } else {
-    // در غیر این صورت درخواست رو بفرست برای اسکریپت فیلترشکن
     handler(req, res);
   }
 });
@@ -498,4 +483,3 @@ const server = http.createServer((req, res) => {
 server.listen(port, () => {
   console.log(`Relay server is running on port ${port}`);
 });
-
